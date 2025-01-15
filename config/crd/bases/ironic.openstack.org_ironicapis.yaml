@@ -32,6 +32,11 @@ spec:
       openAPIV3Schema:
         description: IronicAPI is the Schema for the ironicapis API
         properties:
+          apiTimeout:
+            default: 60
+            description: APITimeout for HAProxy, Apache
+            minimum: 10
+            type: integer
           apiVersion:
             description: |-
               APIVersion defines the versioned schema of this representation of an object.
