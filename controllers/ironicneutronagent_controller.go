@@ -46,7 +46,9 @@ import (
 	"github.com/openstack-k8s-operators/ironic-operator/pkg/ironicneutronagent"
 	keystonev1 "github.com/openstack-k8s-operators/keystone-operator/api/v1beta1"
 	endpoint "github.com/openstack-k8s-operators/lib-common/modules/common/endpoint"
+	"github.com/openstack-k8s-operators/lib-common/modules/common/service"
 	"github.com/openstack-k8s-operators/lib-common/modules/common/tls"
+	"github.com/openstack-k8s-operators/neutron-operator/pkg/neutronapi"
 
 	topologyv1 "github.com/openstack-k8s-operators/infra-operator/apis/topology/v1beta1"
 	"github.com/openstack-k8s-operators/lib-common/modules/common"
@@ -310,6 +312,22 @@ func (r *IronicNeutronAgentReconciler) findObjectsForSrc(ctx context.Context, sr
 	}
 
 	return requests
+}
+
+func (r *IronicNeutronAgentReconciler) getTransportURL(
+	ctx context.Context,
+	h *helper.Helper,
+	instance *ironicv1.IronicNeutronAgent,
+) (string, error) {
+	transportURLSecret, _, err := secret.GetSecret(ctx, h, instance.Status.TransportURLSecret, instance.Namespace)
+	if err != nil {
+		return "", err
+	}
+	transportURL, ok := transportURLSecret.Data["transport_url"]
+	if !ok {
+		return "", fmt.Errorf("transport_url %w Transport Secret", util.ErrNotFound)
+	}
+	return string(transportURL), nil
 }
 
 func (r *IronicNeutronAgentReconciler) reconcileTransportURL(
@@ -701,6 +719,100 @@ func (r *IronicNeutronAgentReconciler) reconcileUpgrade(
 	return ctrl.Result{}, nil
 }
 
+// generateServiceSecrets - create secrets which service configuration
+// TODO(ihar) we may want to split generation of config for db-sync and for neutronapi main pod, which
+// would allow the operator to proceed with db-sync without waiting for other configuration values
+func (r *IronicNeutronAgentReconciler) generateServiceSecrets(
+	ctx context.Context,
+	h *helper.Helper,
+	instance *ironicv1.IronicNeutronAgent,
+	envVars *map[string]env.Setter,
+) error {
+	// Create/update secrets from templates
+	cmLabels := labels.GetLabels(instance, labels.GetGroupLabel(neutronapi.ServiceName), map[string]string{})
+
+	// customData hold any customization for the service.
+	// 02-ironic_neutron_agent-custom.conf is going to /etc/<service>/<service>.conf.d
+	// 01-neutron.conf is going to /etc/<service>/<service>.conf.d such that it gets loaded before custom one
+	// all other files get placed into /etc/<service> to allow overwrite of e.g. policy.yaml
+	customData := map[string]string{
+		"02-ironic_neutron_agent-custom.conf": instance.Spec.CustomServiceConfig,
+	}
+	for key, data := range instance.Spec.DefaultConfigOverwrite {
+		customData[key] = data
+	}
+
+	keystoneAPI, err := keystonev1.GetKeystoneAPI(ctx, h, instance.Namespace, map[string]string{})
+	if err != nil {
+		return err
+	}
+	keystoneInternalURL, err := keystoneAPI.GetEndpoint(endpoint.EndpointInternal)
+	if err != nil {
+		return err
+	}
+	keystonePublicURL, err := keystoneAPI.GetEndpoint(endpoint.EndpointPublic)
+	if err != nil {
+		return err
+	}
+
+	transportURL, err := r.getTransportURL(ctx, h, instance)
+	if err != nil {
+		return err
+	}
+
+	ospSecret, _, err := secret.GetSecret(ctx, h, instance.Spec.Secret, instance.Namespace)
+	if err != nil {
+		return err
+	}
+
+	templateParameters := make(map[string]interface{})
+	templateParameters["ServiceUser"] = instance.Spec.ServiceUser
+	templateParameters["KeystoneInternalURL"] = keystoneInternalURL
+	templateParameters["KeystonePublicURL"] = keystonePublicURL
+	templateParameters["TransportURL"] = transportURL
+
+	// Other OpenStack services
+	servicePassword := string(ospSecret.Data[instance.Spec.PasswordSelectors.Service])
+	templateParameters["ServicePassword"] = servicePassword
+
+	// create httpd  vhost template parameters
+	httpdVhostConfig := map[string]interface{}{}
+	for _, endpt := range []service.Endpoint{service.EndpointInternal, service.EndpointPublic} {
+		endptConfig := map[string]interface{}{}
+		endptConfig["ServerName"] = fmt.Sprintf("neutron-%s.%s.svc", endpt.String(), instance.Namespace)
+		endptConfig["TLS"] = false // default TLS to false, and set it bellow to true if enabled
+		httpdVhostConfig[endpt.String()] = endptConfig
+	}
+
+	templateParameters["VHosts"] = httpdVhostConfig
+
+	secrets := []util.Template{
+		{
+			Name:          fmt.Sprintf("%s-config", instance.Name),
+			Namespace:     instance.Namespace,
+			Type:          util.TemplateTypeConfig,
+			InstanceType:  instance.Kind,
+			CustomData:    customData,
+			Labels:        cmLabels,
+			ConfigOptions: templateParameters,
+		},
+		{
+			Name:         fmt.Sprintf("%s-httpd-config", instance.Name),
+			Namespace:    instance.Namespace,
+			Type:         util.TemplateTypeNone,
+			InstanceType: instance.Kind,
+			Labels:       cmLabels,
+			AdditionalTemplate: map[string]string{
+				"httpd.conf":            "/neutronapi/httpd/httpd.conf",
+				"10-neutron-httpd.conf": "/neutronapi/httpd/10-neutron-httpd.conf",
+				"ssl.conf":              "/neutronapi/httpd/ssl.conf",
+			},
+			ConfigOptions: templateParameters,
+		},
+	}
+	return secret.EnsureSecrets(ctx, h, instance, secrets, envVars)
+}
+
 // generateServiceConfigMaps - create custom configmap to hold service-specific config
 func (r *IronicNeutronAgentReconciler) generateServiceConfigMaps(
 	ctx context.Context,
@@ -733,10 +845,25 @@ func (r *IronicNeutronAgentReconciler) generateServiceConfigMaps(
 		return err
 	}
 
+	transportURL, err := r.getTransportURL(ctx, h, instance)
+	if err != nil {
+		return err
+	}
+
+	ospSecret, _, err := secret.GetSecret(ctx, h, instance.Spec.Secret, instance.Namespace)
+	if err != nil {
+		return err
+	}
+
 	templateParameters := make(map[string]interface{})
 	templateParameters["ServiceUser"] = instance.Spec.ServiceUser
 	templateParameters["KeystoneInternalURL"] = keystoneInternalURL
 	templateParameters["KeystonePublicURL"] = keystonePublicURL
+	templateParameters["TransportURL"] = transportURL
+
+	// Other OpenStack services
+	servicePassword := string(ospSecret.Data[instance.Spec.PasswordSelectors.Service])
+	templateParameters["ServicePassword"] = servicePassword
 
 	cms := []util.Template{
 		// Scripts ConfigMap
