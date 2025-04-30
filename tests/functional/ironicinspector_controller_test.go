@@ -40,6 +40,11 @@ var _ = Describe("IronicInspector controller", func() {
 				CreateIronicSecret(ironicNames.Namespace, SecretName),
 			)
 			DeferCleanup(
+				k8sClient.Delete,
+				ctx,
+				CreateMessageBusSecret(ironicNames.Namespace, MessageBusSecretName),
+			)
+			DeferCleanup(
 				mariadb.DeleteDBService,
 				mariadb.CreateDBService(
 					ironicNames.Namespace,
@@ -51,7 +56,8 @@ var _ = Describe("IronicInspector controller", func() {
 			)
 			DeferCleanup(
 				keystone.DeleteKeystoneAPI,
-				keystone.CreateKeystoneAPI(ironicNames.Namespace))
+				keystone.CreateKeystoneAPI(ironicNames.Namespace),
+			)
 			spec := GetDefaultIronicInspectorSpec()
 			spec["rpcTransport"] = "oslo"
 			DeferCleanup(
@@ -198,24 +204,24 @@ var _ = Describe("IronicInspector controller", func() {
 			ss := th.GetStatefulSet(ironicNames.InspectorName)
 			// Check the resulting deployment fields
 			Expect(int(*ss.Spec.Replicas)).To(Equal(1))
-			Expect(ss.Spec.Template.Spec.Volumes).To(HaveLen(6))
+			Expect(ss.Spec.Template.Spec.Volumes).To(HaveLen(5))
 			Expect(ss.Spec.Template.Spec.Containers).To(HaveLen(4))
 
 			// Check the ironic-inspector-httpd container
 			container := ss.Spec.Template.Spec.Containers[0]
 			Expect(container.Name).To(Equal("ironic-inspector-httpd"))
-			Expect(container.VolumeMounts).To(HaveLen(6))
+			Expect(container.VolumeMounts).To(HaveLen(5))
 
 			// Check the ironic-inspector container
 			container = ss.Spec.Template.Spec.Containers[1]
-			Expect(container.VolumeMounts).To(HaveLen(6))
+			Expect(container.VolumeMounts).To(HaveLen(5))
 			Expect(container.Name).To(Equal("ironic-inspector"))
 			Expect(container.LivenessProbe.HTTPGet.Port.IntVal).To(Equal(int32(5050)))
 			Expect(container.ReadinessProbe.HTTPGet.Port.IntVal).To(Equal(int32(5050)))
 
 			// Check the ironic-httpboot container
 			container = ss.Spec.Template.Spec.Containers[2]
-			Expect(container.VolumeMounts).To(HaveLen(6))
+			Expect(container.VolumeMounts).To(HaveLen(5))
 			Expect(container.Name).To(Equal("inspector-httpboot"))
 
 			th.ExpectCondition(
@@ -275,6 +281,11 @@ var _ = Describe("IronicInspector controller", func() {
 				k8sClient.Delete,
 				ctx,
 				CreateIronicSecret(ironicNames.Namespace, SecretName),
+			)
+			DeferCleanup(
+				k8sClient.Delete,
+				ctx,
+				CreateMessageBusSecret(ironicNames.Namespace, MessageBusSecretName),
 			)
 			DeferCleanup(
 				mariadb.DeleteDBService,
@@ -392,7 +403,7 @@ var _ = Describe("IronicInspector controller", func() {
 			depl := th.GetStatefulSet(ironicNames.InspectorName)
 			// Check the resulting deployment fields
 			Expect(int(*depl.Spec.Replicas)).To(Equal(1))
-			Expect(depl.Spec.Template.Spec.Volumes).To(HaveLen(9))
+			Expect(depl.Spec.Template.Spec.Volumes).To(HaveLen(8))
 			Expect(depl.Spec.Template.Spec.Containers).To(HaveLen(4))
 
 			// cert deployment volumes
@@ -482,7 +493,7 @@ var _ = Describe("IronicInspector controller", func() {
 			depl := th.GetStatefulSet(ironicNames.InspectorName)
 			// Check the resulting deployment fields
 			Expect(int(*depl.Spec.Replicas)).To(Equal(1))
-			Expect(depl.Spec.Template.Spec.Volumes).To(HaveLen(9))
+			Expect(depl.Spec.Template.Spec.Volumes).To(HaveLen(8))
 			Expect(depl.Spec.Template.Spec.Containers).To(HaveLen(4))
 
 			// Grab the current config hash
@@ -530,6 +541,11 @@ var _ = Describe("IronicInspector controller", func() {
 				k8sClient.Delete,
 				ctx,
 				CreateIronicSecret(ironicNames.Namespace, SecretName),
+			)
+			DeferCleanup(
+				k8sClient.Delete,
+				ctx,
+				CreateMessageBusSecret(ironicNames.Namespace, MessageBusSecretName),
 			)
 			DeferCleanup(
 				mariadb.DeleteDBService,
@@ -583,7 +599,7 @@ var _ = Describe("IronicInspector controller", func() {
 		Eventually(func(g Gomega) {
 			configDataMap := th.GetSecret(ironicNames.InspectorConfigSecretName)
 
-			conf := configDataMap.Data["inspector.conf"]
+			conf := configDataMap.Data["01-inspector.conf"]
 
 			g.Expect(string(conf)).Should(
 				ContainSubstring(fmt.Sprintf("connection=mysql+pymysql://%s:%s@hostname-for-openstack.%s.svc/ironic_inspector?read_default_file=/etc/my.cnf",

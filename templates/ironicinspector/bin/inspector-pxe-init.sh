@@ -22,7 +22,7 @@ export PODINDEX=$(echo ${HOSTNAME##*-})
 export InspectorNetworkIP=$(/usr/local/bin/container-scripts/get_net_ip ${InspectionNetwork})
 export INSPECTOR_HTTP_URL=$(python3 -c 'import os; print(os.environ["InspectorHTTPURL"] % os.environ)')
 
-export DNSMASQ_CFG=/var/lib/config-data/merged/dnsmasq.conf
+export DNSMASQ_CFG=/var/lib/config-data/default/dnsmasq.conf
 sed -e "/BLOCK_PODINDEX_${PODINDEX}_BEGIN/,/BLOCK_PODINDEX_${PODINDEX}_END/p" \
     -e "/BLOCK_PODINDEX_.*_BEGIN/,/BLOCK_PODINDEX_.*_END/d" \
     -i ${DNSMASQ_CFG}
@@ -31,7 +31,7 @@ sed -e "/BLOCK_PODINDEX_${PODINDEX}_BEGIN/d" \
     -i ${DNSMASQ_CFG}
 envsubst < ${DNSMASQ_CFG} | tee ${DNSMASQ_CFG}
 
-export INSPECTOR_IPXE=/var/lib/config-data/merged/inspector.ipxe
+export INSPECTOR_IPXE=/var/lib/config-data/default/inspector.ipxe
 envsubst < ${INSPECTOR_IPXE} | tee ${INSPECTOR_IPXE}
 
 # run common pxe-init script

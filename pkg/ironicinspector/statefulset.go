@@ -342,7 +342,6 @@ func StatefulSet(
 		// Build what the fully qualified Route hostname will be when the Route exists
 		inspectorHTTPURL = "http://%(PodName)s-%(PodNamespace)s.%(IngressDomain)s/"
 	}
-
 	initContainerDetails := APIDetails{
 		ContainerImage:         instance.Spec.ContainerImage,
 		PxeContainerImage:      instance.Spec.PxeContainerImage,
