@@ -8,7 +8,7 @@ import (
 // GetVolumes -
 func GetVolumes(name string) []corev1.Volume {
 	var config0640AccessMode int32 = 0640
-
+	parentName := name - "-api"
 	apiVolumes := []corev1.Volume{
 		{
 			Name: "config-data-custom",

@@ -468,6 +468,25 @@ func (r *IronicConductorReconciler) reconcileServices(
 	return ctrl.Result{}, nil
 }
 
+func (r *IronicConductorReconciler) getTransportURL(
+	ctx context.Context,
+	h *helper.Helper,
+	instance *ironicv1.IronicConductor,
+) (string, error) {
+	if instance.Spec.RPCTransport != "oslo" {
+		return "fake://", nil
+	}
+	transportURLSecret, _, err := secret.GetSecret(ctx, h, instance.Spec.TransportURLSecret, instance.Namespace)
+	if err != nil {
+		return "", err
+	}
+	transportURL, ok := transportURLSecret.Data["transport_url"]
+	if !ok {
+		return "", fmt.Errorf("transport_url %w Transport Secret", util.ErrNotFound)
+	}
+	return string(transportURL), nil
+}
+
 func (r *IronicConductorReconciler) reconcileNormal(ctx context.Context, instance *ironicv1.IronicConductor, helper *helper.Helper) (ctrl.Result, error) {
 	Log := r.GetLogger(ctx)
 
@@ -589,14 +608,9 @@ func (r *IronicConductorReconciler) reconcileNormal(ctx context.Context, instanc
 	// all cert input checks out so report InputReady
 	instance.Status.Conditions.MarkTrue(condition.TLSInputReadyCondition, condition.InputReadyMessage)
 
-	//
-	// Create ConfigMaps required as input for the Service and calculate an overall hash of hashes
-	//
-
-	//
-	// create custom Configmap for this ironic volume service
-	//
-	err = r.generateServiceConfigMaps(ctx, helper, instance, &configMapVars)
+	// create Secret required for ironicConductor input. It contains minimal ironicConductor config required
+	// to get the service up, user can add additional files to be added to the service.
+	err = r.generateServiceSecrets(ctx, helper, instance, &configMapVars)
 	if err != nil {
 		instance.Status.Conditions.Set(condition.FalseCondition(
 			condition.ServiceConfigReadyCondition,
@@ -824,18 +838,16 @@ func (r *IronicConductorReconciler) reconcileUpgrade() (ctrl.Result, error) {
 	return ctrl.Result{}, nil
 }
 
-// generateServiceConfigMaps - create custom configmap to hold service-specific config
+// generateServiceSecrets - create custom configmap to hold service-specific config
 // TODO add DefaultConfigOverwrite
-func (r *IronicConductorReconciler) generateServiceConfigMaps(
+func (r *IronicConductorReconciler) generateServiceSecrets(
 	ctx context.Context,
 	h *helper.Helper,
 	instance *ironicv1.IronicConductor,
 	envVars *map[string]env.Setter,
 ) error {
-	//
-	// create custom Configmap for ironic-conductor-specific config input
-	// - %-config-data configmap holding custom config for the service's ironic.conf
-	//
+	// Create/update secrets from templates
+
 	Log := r.GetLogger(ctx)
 	cmLabels := labels.GetLabels(instance, labels.GetGroupLabel(ironic.ServiceName), map[string]string{})
 
@@ -849,11 +861,11 @@ func (r *IronicConductorReconciler) generateServiceConfigMaps(
 	}
 
 	// customData hold any customization for the service.
-	// custom.conf is going to be merged into /etc/ironic/ironic.conf
-	// TODO: make sure custom.conf can not be overwritten
+	// 03-conductor-custom.conf is going to /etc/ironic/ironic.conf.d
+	// 01-inspector.conf is going to /etc/ironic/inspector such that it gets loaded before custom one
 	customData := map[string]string{
-		common.CustomServiceConfigFileName: instance.Spec.CustomServiceConfig,
-		"my.cnf":                           db.GetDatabaseClientConfig(tlsCfg), //(mschuppert) for now just get the default my.cnf
+		"03-conductor-custom.conf": instance.Spec.CustomServiceConfig,
+		"my.cnf":                   db.GetDatabaseClientConfig(tlsCfg), //(mschuppert) for now just get the default my.cnf
 	}
 
 	for key, data := range instance.Spec.DefaultConfigOverwrite {
@@ -863,6 +875,13 @@ func (r *IronicConductorReconciler) generateServiceConfigMaps(
 	customData[common.CustomServiceConfigFileName] = instance.Spec.CustomServiceConfig
 
 	templateParameters := make(map[string]interface{})
+
+	transportURL, err := r.getTransportURL(ctx, h, instance)
+	if err != nil {
+		return err
+	}
+	templateParameters["TransportURL"] = transportURL
+
 	if !instance.Spec.Standalone {
 		templateParameters["KeystoneInternalURL"] = instance.Spec.KeystoneEndpoints.Internal
 		templateParameters["KeystonePublicURL"] = instance.Spec.KeystoneEndpoints.Public
@@ -923,8 +942,8 @@ func (r *IronicConductorReconciler) generateServiceConfigMaps(
 			CustomData:    customData,
 			ConfigOptions: templateParameters,
 			AdditionalTemplate: map[string]string{
-				"ironic.conf":  "/common/config/ironic.conf",
-				"dnsmasq.conf": "/common/config/dnsmasq.conf",
+				"01-conductor.conf": "/common/config/01-conductor.conf",
+				"dnsmasq.conf":      "/common/config/dnsmasq.conf",
 			},
 			Labels: cmLabels,
 		},

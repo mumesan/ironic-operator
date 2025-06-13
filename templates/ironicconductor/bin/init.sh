@@ -26,7 +26,8 @@ common_ironic_config
 
 if [ -n "${ProvisionNetwork}" ]; then
     export ProvisionNetworkIP=$(/usr/local/bin/container-scripts/get_net_ip ${ProvisionNetwork})
-    crudini --set ${SVC_CFG_MERGED} DEFAULT my_ip $ProvisionNetworkIP
+    # crudini --set ${SVC_CFG_MERGED} DEFAULT my_ip $ProvisionNetworkIP
+    export MY_IP=$ProvisionNetworkIP
 fi
 export DEPLOY_HTTP_URL=$(python3 -c 'import os; print(os.environ["DeployHTTPURL"] % os.environ)')
 SVC_CFG_MERGED=/var/lib/config-data/merged/ironic.conf
